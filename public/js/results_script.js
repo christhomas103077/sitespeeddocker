@@ -154,7 +154,7 @@ function renderComparisonCards(comparisonData) {
             <ul class="space-y-1 text-sm">
                  <li><strong>FCP:</strong> ${test.metrics?.firstContentfulPaint !== null && test.metrics?.firstContentfulPaint !== undefined ? test.metrics.firstContentfulPaint.toFixed(0) + ' ms' : 'N/A'}</li>
                 <li><strong>LCP:</strong> ${test.metrics?.largestContentfulPaint !== null && test.metrics?.largestContentfulPaint !== undefined ? test.metrics.largestContentfulPaint.toFixed(0) + ' ms' : 'N/A'}</li>
-                <li><strong>Speed Index:</strong> ${test.metrics?.speedIndex !== null && test.metrics?.speedIndex !== undefined ? test.metrics.speedIndex.toFixed(0) : 'N/A'}</li>
+                <li><strong>Speed Index:</strong> ${test.metrics?.speedIndex !== null && test.metrics?.speedIndex !== undefined ? test.metrics.speedIndex.toFixed(0) + ' ms' : 'N/A'}</li>
                 <li><strong>Load Time:</strong> ${test.metrics?.pageLoadTime !== null && test.metrics?.pageLoadTime !== undefined ? test.metrics.pageLoadTime.toFixed(0) + ' ms' : 'N/A'}</li>
                 <li><strong>Size:</strong> ${test.metrics?.totalPageSize !== null && test.metrics?.totalPageSize !== undefined
                 ? (test.metrics.totalPageSize / 1024).toFixed(2) + ' KB'

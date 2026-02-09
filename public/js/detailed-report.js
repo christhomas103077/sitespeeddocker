@@ -1,3 +1,11 @@
+// HTML escaping utility to prevent HTML injection in text content
+const escapeHtml = (text) => {
+    if (!text) return '';
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+};
+
 document.addEventListener('DOMContentLoaded', () => {
     const reportContent = document.getElementById('reportContent');
     const loader = document.getElementById('loader');
@@ -6,6 +14,17 @@ document.addEventListener('DOMContentLoaded', () => {
     const reportSubtitle = document.getElementById('reportSubtitle');
     const tabsContainer = document.getElementById('tabs');
     const tabContentContainer = document.getElementById('tabContent');
+
+    // Get transformCoachData, with fallback
+    const getTransformCoachData = () => {
+        if (typeof window.transformCoachData === 'function') {
+            return window.transformCoachData;
+        }
+        return (records) => {
+            console.error('transformCoachData is not available');
+            return {};
+        };
+    };
 
     const params = new URLSearchParams(window.location.search);
     const testId = params.get('testId');
@@ -21,6 +40,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     let allData = [];
     let processedDataByUrl = {};
+    let coachScores = null; // Store coach scores when loaded
 
     const fetchData = async () => {
         try {
@@ -31,6 +51,10 @@ document.addEventListener('DOMContentLoaded', () => {
             if (allData.length === 0) throw new Error('No data returned for this test ID.');
 
             processData();
+            
+            // Fetch coach scores immediately (lightweight, ~50 bytes)
+            await fetchCoachScores();
+            
             populateUrlSelector();
 
             const initialUrl = Object.keys(processedDataByUrl)[0];
@@ -47,6 +71,28 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch (error) {
             console.error('Error fetching or processing report data:', error);
             loader.innerHTML = `<p class="text-red-500 text-center">Error loading report: ${error.message}</p>`;
+        }
+    };
+
+    const fetchCoachScores = async () => {
+        try {
+            const response = await fetch(`/api/tests/${testId}/coach/scores`);
+            if (!response.ok) {
+                console.warn('Coach scores not available yet');
+                return;
+            }
+            coachScores = await response.json();
+            
+            // Update all URLs with the scores
+            Object.keys(processedDataByUrl).forEach(url => {
+                processedDataByUrl[url].summary.performanceScore = coachScores.performanceScore;
+                processedDataByUrl[url].summary.privacyScore = coachScores.privacyScore;
+                processedDataByUrl[url].summary.bestPracticeScore = coachScores.bestPracticeScore;
+            });
+            
+            console.log('Coach scores loaded:', coachScores);
+        } catch (error) {
+            console.warn('Could not fetch coach scores:', error.message);
         }
     };
 
@@ -76,9 +122,6 @@ document.addEventListener('DOMContentLoaded', () => {
             if (recordsForUrl.length > 0) {
                 processedDataByUrl[urlKey] = {
                     summary: extractSummary(recordsForUrl, urlKey),
-                    performance: extractPerformanceMetrics(recordsForUrl),
-                    coach: extractCoachAdvice(recordsForUrl),
-                    pagexray: extractPageXrayData(recordsForUrl),
                     media: extractMedia(recordsForUrl)
                 };
             }
@@ -114,6 +157,8 @@ document.addEventListener('DOMContentLoaded', () => {
             'Media': createMediaTab
         };
 
+        const lazyLoadTabs = ['Performance', 'Coach', 'PageXray'];
+
         Object.keys(tabs).forEach((tabName, index) => {
             const button = document.createElement('button');
             button.className = `tab-button ${index === 0 ? 'active' : ''}`;
@@ -124,26 +169,81 @@ document.addEventListener('DOMContentLoaded', () => {
             const pane = document.createElement('div');
             pane.id = `pane-${tabName}`;
             pane.className = `tab-pane ${index === 0 ? 'active' : ''}`;
+            pane.dataset.loaded = 'false';
 
-            // Pass testId to render media properly
-            pane.innerHTML = tabs[tabName](data, testId);
+            if (!lazyLoadTabs.includes(tabName)) {
+                pane.innerHTML = tabs[tabName](data, testId);
+                pane.dataset.loaded = 'true';
+            } else {
+                pane.innerHTML = '<div class="card"><p>Loading...</p></div>';
+            }
 
             tabContentContainer.appendChild(pane);
 
-            button.addEventListener('click', () => {
+            button.addEventListener('click', async () => {
                 document.querySelectorAll('.tab-button').forEach(b => b.classList.remove('active'));
                 document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
                 button.classList.add('active');
                 pane.classList.add('active');
-
-                if (tabName === 'Performance') renderPerformanceCharts(data.performance);
-                if (tabName === 'PageXray') renderPageXrayCharts(data.pagexray);
+                if (tabName === 'Performance' && pane.dataset.loaded === 'false') {
+                    try {
+                        const performanceMetrics = await fetch(`/api/tests/${testId}/performance`)
+                            .then(r => r.json());
+                        
+                        if (performanceMetrics && Object.keys(performanceMetrics).length > 0) {
+                            data.performance = performanceMetrics;
+                        } else {
+                            data.performance = {};
+                        }
+                        
+                        pane.innerHTML = tabs[tabName](data, testId);
+                        pane.dataset.loaded = 'true';
+                        
+                        // Render charts after content is rendered
+                        setTimeout(() => renderPerformanceCharts(data.performance), 0);
+                    } catch (error) {
+                        console.error('Performance data fetch error:', error);
+                        pane.innerHTML = `<div class="card"><p class="text-red-500">Error loading performance data: ${error.message}</p></div>`;
+                    }
+                }
+                if (tabName === 'Coach' && pane.dataset.loaded === 'false') {
+                    try {
+                        const coachData = await fetch(`/api/tests/${testId}/coach`).then(r => r.json());
+                        const transformCoachData = getTransformCoachData();
+                        data.coach = transformCoachData(coachData);
+                        
+                        console.log('Coach data transformed:', data.coach);
+                        pane.innerHTML = tabs[tabName](data, testId);
+                        pane.dataset.loaded = 'true';
+                    } catch (error) {
+                        console.error('Coach error details:', error);
+                        pane.innerHTML = `<div class="card"><p class="text-red-500">Error loading coach data: ${error.message}</p></div>`;
+                    }
+                }
+                if (tabName === 'PageXray' && pane.dataset.loaded === 'false') {
+                    try {
+                            const response = await fetch(`/api/tests/${testId}/pagexray`);
+                            if (!response.ok) {
+                                throw new Error(`Failed to fetch pagexray data: ${response.status}`);
+                            }
+                            const pagexrayData = await response.json();
+                        const pagexrayRecords = pagexrayData.filter(r => r._measurement === 'pagexray');
+                        data.pagexray = extractPageXrayData(pagexrayRecords);
+                        pane.innerHTML = tabs[tabName](data, testId);
+                        pane.dataset.loaded = 'true';
+                        // Render charts after content is rendered
+                        setTimeout(() => renderPageXrayCharts(data.pagexray), 0);
+                    } catch (error) {
+                        pane.innerHTML = `<div class="card"><p class="text-red-500">Error loading PageXray data: ${error.message}</p></div>`;
+                    }
+                }
+                if (tabName === 'Performance' && pane.dataset.loaded === 'true') renderPerformanceCharts(data.performance);
+                if (tabName === 'PageXray' && pane.dataset.loaded === 'true') renderPageXrayCharts(data.pagexray);
             });
         });
-
-        renderPerformanceCharts(data.performance);
     };
 
+    // Function to update summary scores dynamically when coach data loads
     fetchData();
 });
 
@@ -164,19 +264,14 @@ function extractSummary(records, urlKey) {
     // Find basic info
     const timeRecord = records[0];
 
-    // Scores often come as separate measurements or tags. 
-    // In standard sitespeed influx, it might be just 'score' without category tags in the main view.
-    // We try to look for our custom 'coach_advice' or fallback to 'score'
-    const perfScore = getValue(records.filter(r => r.adviceId === 'performance'), 'coach_advice', 'score') ||
-        getValue(records, 'score');
-
+    // Scores are fetched immediately via fetchCoachScores() and updated in processedDataByUrl
     return {
         url: urlKey,
         browser: timeRecord ? timeRecord.browser : 'N/A',
         timestamp: timeRecord ? new Date(timeRecord._time).toLocaleString() : 'N/A',
-        performanceScore: perfScore !== null ? perfScore : 'N/A',
-        accessibilityScore: getValue(records.filter(r => r.adviceId === 'accessibility'), 'coach_advice', 'score') || 'N/A',
-        bestPracticeScore: getValue(records.filter(r => r.adviceId === 'bestpractice'), 'coach_advice', 'score') || 'N/A',
+        performanceScore: 'N/A',
+        privacyScore: 'N/A',
+        bestPracticeScore: 'N/A',
     };
 }
 
@@ -284,8 +379,8 @@ function createSummaryTab(data) {
                 <div class="score-circle mx-auto" style="background-color: #28a745;">${data.summary.performanceScore}</div>
             </div>
             <div class="card text-center">
-                <h2 class="text-xl font-bold mb-4">Accessibility Score</h2>
-                <div class="score-circle mx-auto" style="background-color: #007bff;">${data.summary.accessibilityScore}</div>
+                <h2 class="text-xl font-bold mb-4">Privacy Score</h2>
+                <div class="score-circle mx-auto" style="background-color: #007bff;">${data.summary.privacyScore}</div>
             </div>
             <div class="card text-center">
                 <h2 class="text-xl font-bold mb-4">Best Practice Score</h2>
@@ -309,7 +404,7 @@ function createPerformanceTab(data) {
                 ${Object.entries(data.performance).map(([key, value]) => `
                     <li class="flex justify-between py-2 border-b">
                         <span class="font-semibold">${key}</span>
-                        <span>${value} ${key.includes('Score') || key === 'SpeedIndex' ? '' : 'ms'}</span>
+                        <span>${value} ${key.includes('Score') ? '' : 'ms'}</span>
                     </li>
                 `).join('')}
              </ul>
@@ -318,19 +413,40 @@ function createPerformanceTab(data) {
 }
 
 function createCoachTab(data) {
-    if (!data.coach || data.coach.length === 0) {
+    if (!data.coach || typeof data.coach !== 'object' || Object.keys(data.coach).length === 0) {
         return '<div class="card"><p>No detailed Coach advice available.</p></div>';
     }
+    
+    const categories = ['performance', 'privacy', 'bestpractice'];
+    
     return `
         <div class="card">
             <h2 class="text-xl font-bold mb-4">Coach's Advice</h2>
             <div>
-                ${data.coach.map(advice => `
-                    <div class="border-b py-4">
-                        <h3 class="font-semibold text-lg">${advice.title || 'Advice'} <span class="text-sm font-normal text-gray-600">(Score: ${advice.score})</span></h3>
-                        <p class="text-gray-700 mt-1">${advice.description || ''}</p>
-                    </div>
-                `).join('')}
+                ${categories.map(category => {
+                    const categoryData = data.coach[category];
+                    if (!categoryData) return '';
+                    
+                    const categoryTitle = category.charAt(0).toUpperCase() + category.slice(1);
+                    const adviceItems = Object.entries(categoryData.adviceList || {});
+                    const fullMarkItems = categoryData.fullMark?.list || [];
+                    
+                    return `
+                        <div class="mb-6">
+                            <h3 class="text-lg font-bold text-gray-800 mb-2">${categoryTitle} <span class="text-sm font-normal text-gray-600">(Score: ${categoryData.score})</span></h3>
+                            ${adviceItems.length > 0 ? `
+                                <div class="pl-4">
+                                    ${adviceItems.map(([adviceId, advice]) => `
+                                        <div class="border-b py-3">
+                                            <h4 class="font-semibold text-md">${escapeHtml(advice.title || adviceId)} <span class="text-xs font-normal text-gray-600">(${advice.score})</span></h4>
+                                            <p class="text-gray-700 mt-1">${escapeHtml(advice.advice || '')}</p>
+                                        </div>
+                                    `).join('')}
+                                </div>
+                            ` : ''}
+                        </div>
+                    `;
+                }).join('')}
             </div>
         </div>
     `;
@@ -404,7 +520,7 @@ let timingChartInstance, contentRequestsChartInstance, contentSizeChartInstance;
 
 function renderPerformanceCharts(performanceData) {
     const ctx = document.getElementById('timingChart')?.getContext('2d');
-    if (!ctx) return;
+    if (!ctx || !performanceData || Object.keys(performanceData).length === 0) return;
     if (timingChartInstance) timingChartInstance.destroy();
 
     const labels = [];

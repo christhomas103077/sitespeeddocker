@@ -2,6 +2,8 @@ const fs = require('fs');
 const path = require('path');
 const { getWriteApi, Point } = require('../config/influx');
 const paths = require('../config/paths');
+const coachDataService = require('./coachDataService');
+const pagexrayDataService = require('./pagexrayDataService');
 
 // Helper for logging
 function logDebug(message) {
@@ -16,6 +18,14 @@ async function processAndStoreDetailedResults(testRunId, browser, url) {
     writeApi.useDefaultTags({ test_id: testRunId, browser: browser });
 
     writeApi.useDefaultTags({ test_id: testRunId, browser: browser });
+    
+    // Save test run metadata to MySQL (audit trail)
+    try {
+        await coachDataService.saveTestRun(testRunId, browser);
+        logDebug(`Saved test run metadata: ${testRunId}`);
+    } catch (err) {
+        logDebug(`Error saving test run metadata: ${err.message}`);
+    }
 
     const resultsPath = path.join(paths.containerResultsDir, testRunId);
     const pagesPath = path.join(resultsPath, 'pages');
@@ -127,6 +137,13 @@ async function processAndStoreDetailedResults(testRunId, browser, url) {
                     const url = coachData.url || 'unknown_url';
 
                     if (adviceRoot) {
+                        // Extract category scores for immediate Summary display
+                        const categoryScores = {
+                            performance: adviceRoot.performance?.score,
+                            privacy: adviceRoot.privacy?.score,
+                            bestpractice: adviceRoot.bestpractice?.score
+                        };
+
                         for (const categoryName in adviceRoot) {
                             const category = adviceRoot[categoryName];
                             if (category.adviceList) {
@@ -138,17 +155,19 @@ async function processAndStoreDetailedResults(testRunId, browser, url) {
 
                                     if (score !== undefined) {
                                         try {
-                                            const point = new Point('coach_advice')
-                                                .tag('test_id', testRunId)
-                                                .tag('url', url)
-                                                .tag('group', pageFolder)
-                                                .tag('adviceId', adviceId)
-                                                .intField('score', score)
-                                                .stringField('title', title || adviceId)
-                                                .stringField('description', description || '');
-                                            writeApi.writePoint(point);
+                                            // Write to MySQL only
+                                            await coachDataService.saveCoachData(
+                                                testRunId,
+                                                url,
+                                                pageFolder,
+                                                categoryName,
+                                                adviceId,
+                                                score,
+                                                title || adviceId,
+                                                description || ''
+                                            );
                                         } catch (err) {
-                                            logDebug(`Error writing coach point ${adviceId}: ${err.message}`);
+                                            logDebug(`Error writing coach point to MySQL ${adviceId}: ${err.message}`);
                                         }
                                     }
                                 }
@@ -159,17 +178,29 @@ async function processAndStoreDetailedResults(testRunId, browser, url) {
                             // Write the overall category score
                             if (category.score !== undefined) {
                                 try {
-                                    const point = new Point('coach_advice')
-                                        .tag('test_id', testRunId)
-                                        .tag('url', url)
-                                        .tag('group', pageFolder)
-                                        .tag('adviceId', categoryName) // e.g., 'performance', 'accessibility'
-                                        .intField('score', category.score);
-                                    writeApi.writePoint(point);
+                                    // Write to MySQL only
+                                    await coachDataService.saveCoachData(
+                                        testRunId,
+                                        url,
+                                        pageFolder,
+                                        categoryName,
+                                        categoryName,
+                                        category.score,
+                                        categoryName,
+                                        ''
+                                    );
                                 } catch (err) {
-                                    logDebug(`Error writing coach category score ${categoryName}: ${err.message}`);
+                                    logDebug(`Error writing coach category score to MySQL ${categoryName}: ${err.message}`);
                                 }
                             }
+                        }
+
+                        // Save the 3 category scores to coach_scores table
+                        try {
+                            await coachDataService.saveCoachScores(testRunId, categoryScores);
+                            logDebug(`Saved coach category scores: Performance=${categoryScores.performance}, Privacy=${categoryScores.privacy}, BestPractice=${categoryScores.bestpractice}`);
+                        } catch (err) {
+                            logDebug(`Error saving coach scores to MySQL: ${err.message}`);
                         }
                     }
                 }
@@ -189,17 +220,19 @@ async function processAndStoreDetailedResults(testRunId, browser, url) {
                             const contentSize = data.contentSize?.median ?? data.contentSize;
 
                             try {
-                                const point = new Point('pagexray')
-                                    .tag('test_id', testRunId)
-                                    .tag('url', url)
-                                    .tag('group', pageFolder)
-                                    .tag('contentType', contentType)
-                                    .intField('requests', requests)
-                                    .intField('transferSize', transferSize)
-                                    .intField('contentSize', contentSize);
-                                writeApi.writePoint(point);
+                                // Write to MySQL only (InfluxDB deprecated for PageXray)
+                                await pagexrayDataService.savePageXrayData(
+                                    testRunId,
+                                    url,
+                                    pageFolder,
+                                    browser,
+                                    contentType,
+                                    requests,
+                                    contentSize,
+                                    transferSize
+                                );
                             } catch (err) {
-                                logDebug(`Error writing pagexray point ${contentType}: ${err.message}`);
+                                logDebug(`Error writing pagexray data to MySQL ${contentType}: ${err.message}`);
                             }
                         }
                     }

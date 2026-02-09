@@ -19,6 +19,10 @@ const upload = multer({ storage: storage });
 router.post('/run-test', upload.single('script'), testController.runTest);
 router.get('/tests', testController.getTests);
 router.get('/tests/:testId', testController.getTest);
+router.get('/tests/:testId/coach', testController.getCoachData);
+router.get('/tests/:testId/coach/scores', testController.getCoachScores);
+router.get('/tests/:testId/pagexray', testController.getPagexrayData);
+router.get('/tests/:testId/performance', testController.getPerformanceMetrics);
 router.get('/comparison', testController.getComparison);
 
 module.exports = router;

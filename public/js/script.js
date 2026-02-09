@@ -124,7 +124,7 @@ function setCompletedState(data) {
   const viewDetailsButton = resultsContent.querySelector('.view-details-btn');
   if (data.testId && viewDetailsButton) {
       viewDetailsButton.addEventListener('click', () => {
-          window.open(`results.html?testId=${data.testId}`, '_blank');
+          window.location.href = `detailed-report.html?testId=${data.testId}`;
       });
   } else if (viewDetailsButton) {
       viewDetailsButton.style.display = 'none';

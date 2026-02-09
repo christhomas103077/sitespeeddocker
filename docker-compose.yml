@@ -32,6 +32,41 @@ services:
     networks:
       # Connects to the network named 'sitespeed-net'
       - sitespeed-net
+  
+  mysql:
+    image: mysql:8.0
+    container_name: mysql-db
+    ports:
+      - "3306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root_password_123}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-sitespeed}
+      MYSQL_USER: ${MYSQL_USER:-sitespeed_user}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-sitespeed_pass_123}
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./config/mysql-init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - sitespeed-net
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      timeout: 20s
+      retries: 10
+
+  phpmyadmin:
+    image: phpmyadmin:latest
+    container_name: phpmyadmin
+    ports:
+      - "8082:80"
+    environment:
+      PMA_HOST: mysql-db
+      PMA_USER: sitespeed_user
+      PMA_PASSWORD: ${MYSQL_PASSWORD:-sitespeed_pass_123}
+      PMA_DB: sitespeed
+    depends_on:
+      - mysql
+    networks:
+      - sitespeed-net
 
   web:
     build:
@@ -39,7 +74,7 @@ services:
       dockerfile: docker/Dockerfile.web
     container_name: web-app
     ports:
-      - "8080:80"
+      - "8081:80"
     volumes:
       - ./uploads:/app/uploads
       - ./results:/usr/share/nginx/html/results
@@ -74,6 +109,7 @@ services:
 volumes:
   influxdb-data:
   grafana-data:
+  mysql-data:
 
 networks:
   # Define the network and explicitly name it 'sitespeed-net'
