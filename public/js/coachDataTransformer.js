@@ -46,19 +46,38 @@ function getCategoryForAdviceId(adviceId) {
 
 /**
  * Transforms flat coach data into hierarchical structure
- * Handles both single-field records and multi-field records
- * @param {Array} records - Raw coach advice records from InfluxDB
+ * Handles both InfluxDB flat format and MySQL structured format
+ * @param {Array|Object} data - Raw coach advice records or structured object
  * @returns {Object} Structured coach_metrics object
  */
-function transformCoachData(records) {
+function transformCoachData(data) {
+  let records = [];
+  
+  // Handle structured format from MySQL (object with coachdata array)
+  if (data && typeof data === 'object' && !Array.isArray(data)) {
+    if (data.coachdata && Array.isArray(data.coachdata)) {
+      records = data.coachdata.map(item => ({
+        adviceId: item.advice_id,
+        score: item.score,
+        title: item.title,
+        description: item.description,
+        category_name: item.category_name
+      }));
+    } else {
+      console.warn('Expected coachdata property in structured object');
+      return getEmptyCoachMetrics();
+    }
+  } else if (Array.isArray(data)) {
+    records = data;
+  } else {
+    console.warn('Invalid data format for transformCoachData');
+    return getEmptyCoachMetrics();
+  }
+  
   console.log('transformCoachData called with', records.length, 'records');
   
-  if (!Array.isArray(records) || records.length === 0) {
-    return {
-      bestpractice: { score: 0, adviceList: {}, fullMark: { list: [] } },
-      performance: { score: 0, adviceList: {}, fullMark: { list: [] } },
-      privacy: { score: 0, adviceList: {}, fullMark: { list: [] } }
-    };
+  if (records.length === 0) {
+    return getEmptyCoachMetrics();
   }
 
   const adviceMap = {};
@@ -145,6 +164,18 @@ function transformCoachData(records) {
   console.log('Best Practice items:', Object.keys(coachMetrics.bestpractice.adviceList).length);
   
   return coachMetrics;
+}
+
+/**
+ * Returns empty coach metrics object
+ * @returns {Object} Empty coach_metrics
+ */
+function getEmptyCoachMetrics() {
+  return {
+    bestpractice: { score: 0, adviceList: {}, fullMark: { list: [] } },
+    performance: { score: 0, adviceList: {}, fullMark: { list: [] } },
+    privacy: { score: 0, adviceList: {}, fullMark: { list: [] } }
+  };
 }
 
 // Export for use in other modules

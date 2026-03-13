@@ -16,7 +16,11 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage: storage });
 
-router.post('/run-test', upload.single('script'), testController.runTest);
+router.post('/run-test', testController.runTest);
+router.post('/upload', upload.single('file'), (req, res) => {
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+    res.json({ filePath: req.file.path, filename: path.basename(req.file.path) });
+});
 router.get('/tests', testController.getTests);
 router.get('/tests/:testId', testController.getTest);
 router.get('/tests/:testId/coach', testController.getCoachData);

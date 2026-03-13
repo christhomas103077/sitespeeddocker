@@ -11,14 +11,23 @@ function runSitespeedTest(url, browser, iterations, scriptPath, testRunId) {
         // Construct the Docker command
         // We use the HOST paths for mounting volumes in the sibling container
         // IMPORTANT: outputFolder must be inside the mounted /sitespeed.io/results directory
-        let dockerCommand = `docker run --rm --network sitespeed-net -v "${paths.hostUploadsDir}:/sitespeed.io/uploads" -v "${paths.hostResultsDir}:/sitespeed.io/results" -v "${paths.hostSitespeedConfigPath}:/sitespeed.io/config.json" sitespeedio/sitespeed.io:36.2.0 --config /sitespeed.io/config.json --outputFolder /sitespeed.io/results/${outputFolder} --browsertime.iterations ${iterations} --browsertime.browser ${browser} ${url}`;
+        let dockerCommand = `docker run --rm --network sitespeed-net -v "${paths.hostUploadsDir}:/sitespeed.io/uploads" -v "${paths.hostResultsDir}:/sitespeed.io/results" -v "${paths.hostSitespeedConfigPath}:/sitespeed.io/config.json" sitespeedio/sitespeed.io:36.2.0 --config /sitespeed.io/config.json --outputFolder /sitespeed.io/results/${outputFolder} --browsertime.iterations ${iterations} --browsertime.browser ${browser}`;
 
         if (scriptPath) {
             const scriptFileName = path.basename(scriptPath);
-            dockerCommand += ` --multi /sitespeed.io/uploads/${scriptFileName}`;
-        } else {
+            const ext = path.extname(scriptFileName).toLowerCase();
+            if (ext === '.mjs') {
+                // Browsertime script
+                dockerCommand += ` --multi /sitespeed.io/uploads/${scriptFileName}`;
+            } else if (ext === '.txt') {
+                // Text file with URLs
+                dockerCommand += ` /sitespeed.io/uploads/${scriptFileName}`;
+            } else {
+                return reject(new Error('Unsupported file type. Only .mjs or .txt allowed.'));
+            }
+            } else {
             dockerCommand += ` ${url}`;
-        }
+            }
 
         console.log(`Executing Docker command: ${dockerCommand}`);
 

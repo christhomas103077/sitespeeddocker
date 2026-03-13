@@ -4,6 +4,7 @@ const { getWriteApi, Point } = require('../config/influx');
 const paths = require('../config/paths');
 const coachDataService = require('./coachDataService');
 const pagexrayDataService = require('./pagexrayDataService');
+const performanceDataService = require('./performanceDataService');
 
 // Helper for logging
 function logDebug(message) {
@@ -12,11 +13,9 @@ function logDebug(message) {
     fs.appendFileSync(logFile, `[${timestamp}] ${message}\n`);
 }
 
-async function processAndStoreDetailedResults(testRunId, browser, url) {
+async function processAndStoreDetailedResults(testRunId, browser, url,scriptPath) {
     console.log(`Starting processAndStoreDetailedResults for ${testRunId}`);
     const writeApi = getWriteApi();
-    writeApi.useDefaultTags({ test_id: testRunId, browser: browser });
-
     writeApi.useDefaultTags({ test_id: testRunId, browser: browser });
     
     // Save test run metadata to MySQL (audit trail)
@@ -36,16 +35,49 @@ async function processAndStoreDetailedResults(testRunId, browser, url) {
             return;
         }
 
-        const pageFolders = fs.readdirSync(pagesPath);
         logDebug(`Starting processAndStoreDetailedResults for ${testRunId}`);
-        logDebug(`Found page folders: ${pageFolders.join(', ')}`);
+        logDebug(`Pages directory: ${pagesPath}`);
 
-        for (const pageFolder of pageFolders) {
-            const pageFolderPath = path.join(pagesPath, pageFolder);
-            const dataPath = path.join(pageFolderPath, 'data');
+        // Recursively find all data folders
+        function findDataFolders(basePath, depth = 0) {
+            const dataFolders = [];
+            const maxDepth = 5; // Prevent infinite recursion
+            
+            if (depth > maxDepth) return dataFolders;
+            
+            try {
+                const entries = fs.readdirSync(basePath, { withFileTypes: true });
+                for (const entry of entries) {
+                    const fullPath = path.join(basePath, entry.name);
+                    if (entry.isDirectory()) {
+                        if (entry.name === 'data') {
+                            dataFolders.push(fullPath);
+                        } else {
+                            // Recursively search subdirectories
+                            dataFolders.push(...findDataFolders(fullPath, depth + 1));
+                        }
+                    }
+                }
+            } catch (err) {
+                logDebug(`Error reading directory ${basePath}: ${err.message}`);
+            }
+            
+            return dataFolders;
+        }
 
-            if (fs.existsSync(dataPath)) {
-                logDebug(`Processing data in ${dataPath}`);
+        // Find all data folders within pages (starting from pages directory only)
+        logDebug(`Starting recursive search in: ${pagesPath}`);
+        const allDataFolders = findDataFolders(pagesPath);
+        logDebug(`Found ${allDataFolders.length} data folders to process`);
+
+        for (const dataPath of allDataFolders) {
+            logDebug(`Processing data in ${dataPath}`);
+            
+            // Extract pageFolder from path (could be nested like www_qburst_com/en-in/data)
+            // Remove the 'data' folder from the end and make it relative to pagesPath
+            const pageFolder = path.relative(pagesPath, path.dirname(dataPath));
+            
+            logDebug(`Data folder path: ${dataPath}, pageFolder: ${pageFolder}`);
                 // Look for pageSummary files instead of run-1
                 const browsertimePath = path.join(dataPath, 'browsertime.run-1.json');
                 const coachPath = path.join(dataPath, 'coach.run-1.json');
@@ -74,13 +106,19 @@ async function processAndStoreDetailedResults(testRunId, browser, url) {
                             }
 
                             if (value !== null) {
-                                const point = new Point('visualMetrics')
-                                    .tag('test_id', testRunId)
-                                    .tag('url', url)
-                                    .tag('browser', browser)
-                                    .tag('metricName', metricName)
-                                    .floatField('value', value);
-                                writeApi.writePoint(point);
+                                try {
+                                    // Write to MySQL only (InfluxDB deprecated for performance metrics)
+                                    await performanceDataService.savePerformanceMetric(
+                                        testRunId,
+                                        url,
+                                        pageFolder,
+                                        browser,
+                                        metricName,
+                                        value
+                                    );
+                                } catch (err) {
+                                    logDebug(`Error writing visual metric to MySQL ${metricName}: ${err.message}`);
+                                }
                             }
                         }
                     }
@@ -103,13 +141,19 @@ async function processAndStoreDetailedResults(testRunId, browser, url) {
 
                     for (const [metricName, value] of Object.entries(additionalMetrics)) {
                         if (value !== undefined && value !== null && !isNaN(value)) {
-                            const point = new Point('visualMetrics')
-                                .tag('test_id', testRunId)
-                                .tag('url', url)
-                                .tag('browser', browser)
-                                .tag('metricName', metricName)
-                                .floatField('value', value);
-                            writeApi.writePoint(point);
+                            try {
+                                // Write to MySQL only (InfluxDB deprecated for performance metrics)
+                                await performanceDataService.savePerformanceMetric(
+                                    testRunId,
+                                    url,
+                                    pageFolder,
+                                    browser,
+                                    metricName,
+                                    value
+                                );
+                            } catch (err) {
+                                logDebug(`Error writing additional metric to MySQL ${metricName}: ${err.message}`);
+                            }
                         }
                     }
 
@@ -135,6 +179,7 @@ async function processAndStoreDetailedResults(testRunId, browser, url) {
                     const coachData = JSON.parse(fs.readFileSync(coachPath, 'utf8'));
                     const adviceRoot = coachData.advice;
                     const url = coachData.url || 'unknown_url';
+                    logDebug(`Coach data - URL from file: ${url}, pageFolder: ${pageFolder}`);
 
                     if (adviceRoot) {
                         // Extract category scores for immediate Summary display
@@ -146,7 +191,16 @@ async function processAndStoreDetailedResults(testRunId, browser, url) {
 
                         for (const categoryName in adviceRoot) {
                             const category = adviceRoot[categoryName];
-                            if (category.adviceList) {
+                            
+                            // Skip non-category properties (like "errors", "notice", etc.)
+                            if (!['performance', 'privacy', 'bestpractice', 'accessibility'].includes(categoryName)) {
+                                continue;
+                            }
+                            
+                            logDebug(`Processing category: ${categoryName}`);
+                            
+                            // Process individual advice items
+                            if (category && category.adviceList && typeof category.adviceList === 'object') {
                                 for (const adviceId in category.adviceList) {
                                     const adviceItem = category.adviceList[adviceId];
                                     const score = adviceItem.score;
@@ -176,7 +230,7 @@ async function processAndStoreDetailedResults(testRunId, browser, url) {
                             }
 
                             // Write the overall category score
-                            if (category.score !== undefined) {
+                            if (category && category.score !== undefined) {
                                 try {
                                     // Write to MySQL only
                                     await coachDataService.saveCoachData(
@@ -197,11 +251,13 @@ async function processAndStoreDetailedResults(testRunId, browser, url) {
 
                         // Save the 3 category scores to coach_scores table
                         try {
-                            await coachDataService.saveCoachScores(testRunId, categoryScores);
-                            logDebug(`Saved coach category scores: Performance=${categoryScores.performance}, Privacy=${categoryScores.privacy}, BestPractice=${categoryScores.bestpractice}`);
+                            await coachDataService.saveCoachScores(testRunId, url, pageFolder, categoryScores);
+                            logDebug(`Saved coach category scores for ${url}: Performance=${categoryScores.performance}, Privacy=${categoryScores.privacy}, BestPractice=${categoryScores.bestpractice}`);
                         } catch (err) {
                             logDebug(`Error saving coach scores to MySQL: ${err.message}`);
                         }
+                    } else {
+                        logDebug(`No advice root found in coach data`);
                     }
                 }
 
@@ -210,6 +266,7 @@ async function processAndStoreDetailedResults(testRunId, browser, url) {
                     logDebug(`Processing PageXray data from ${pagexrayPath}`);
                     const pagexrayData = JSON.parse(fs.readFileSync(pagexrayPath, 'utf8'));
                     const url = pagexrayData.url || 'unknown_url';
+                    logDebug(`PageXray data - URL from file: ${url}, pageFolder: ${pageFolder}`);
                     const contentTypes = pagexrayData.contentTypes;
 
                     if (contentTypes) {
@@ -237,10 +294,6 @@ async function processAndStoreDetailedResults(testRunId, browser, url) {
                         }
                     }
                 }
-
-            } else {
-                logDebug(`Data path not found: ${dataPath}`);
-            }
         }
         await writeApi.close();
         logDebug(`Successfully processed and stored detailed results for test run: ${testRunId}`);

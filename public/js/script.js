@@ -383,7 +383,13 @@ function setCompletedState(data) {
               throw new Error(errorMessage + detailedOutput);
           }
           
-          setCompletedState(data);
+          if (data.testId) {
+              // Redirect immediately to the detailed report page
+              // The report page will handle the "running" state by polling
+              window.location.href = `detailed-report.html?testId=${data.testId}`;
+          } else {
+              setCompletedState(data);
+          }
 
       } catch (error) {
           if (error.name === 'AbortError') {

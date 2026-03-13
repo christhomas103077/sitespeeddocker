@@ -41,14 +41,53 @@ document.addEventListener('DOMContentLoaded', () => {
     let allData = [];
     let processedDataByUrl = {};
     let coachScores = null; // Store coach scores when loaded
+    let selectedUrl = null;
+
+    // Helper to normalize URL (strip trailing slash)
+    const normalize = (str) => {
+        if (!str) return str;
+        let s = str.trim();
+        return s.endsWith('/') ? s.slice(0, -1) : s;
+    };
 
     const fetchData = async () => {
         try {
             const response = await fetch(`/api/tests/${testId}`);
-            if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-            allData = await response.json();
+            if (!response.ok) {
+                if (response.status === 404) {
+                    throw new Error('Test run not found.');
+                }
+                throw new Error(`Failed to fetch test data: ${response.status}`);
+            }
 
-            if (allData.length === 0) throw new Error('No data returned for this test ID.');
+            allData = await response.json();
+            
+            // If there's no data yet, it might still be running in the background
+            if (!allData || allData.length === 0) {
+                console.log('No data found yet. Test might be still running. Retrying in 30s...');
+                loader.innerHTML = `
+                    <div class="flex flex-col items-center justify-center space-y-6 py-12">
+                        <div class="relative">
+                            <div class="animate-spin rounded-full h-16 w-16 border-4 border-blue-200 border-b-blue-600"></div>
+                            <div class="absolute inset-0 flex items-center justify-center">
+                                <div class="h-8 w-8 bg-blue-50 rounded-full flex items-center justify-center">
+                                    <span class="animate-pulse text-blue-600 text-xs font-bold">...</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="text-center">
+                            <h3 class="text-xl font-bold text-gray-900 mb-2">Sitespeed Test in Progress</h3>
+                            <p class="text-gray-600 max-w-md mx-auto">We're currently analyzing the requested URLs. This can take a few minutes for multiple URLs.</p>
+                            <p class="text-sm text-blue-600 mt-4 italic font-medium">This page will automatically update once results are ready.</p>
+                        </div>
+                        <div class="w-full max-w-xs bg-gray-200 rounded-full h-1.5 mt-2">
+                             <div class="bg-blue-600 h-1.5 rounded-full animate-loading-bar" style="width: 40%"></div>
+                        </div>
+                    </div>
+                `;
+                setTimeout(fetchData, 30000); // Poll every 10 seconds
+                return;
+            }
 
             processData();
             
@@ -70,7 +109,17 @@ document.addEventListener('DOMContentLoaded', () => {
             reportContent.style.display = 'block';
         } catch (error) {
             console.error('Error fetching or processing report data:', error);
-            loader.innerHTML = `<p class="text-red-500 text-center">Error loading report: ${error.message}</p>`;
+            loader.innerHTML = `
+                <div class="max-w-md mx-auto mt-12 p-6 bg-red-50 border border-red-200 rounded-xl text-center">
+                    <div class="w-12 h-12 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                        <svg class="w-6 h-6 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                    </div>
+                    <h3 class="text-lg font-bold text-red-900 mb-1">Failed to Load Report</h3>
+                    <p class="text-red-700 text-sm mb-6">${error.message}</p>
+                    <button onclick="location.reload()" class="w-full py-2 bg-red-600 text-white rounded-lg font-medium hover:bg-red-700 transition-colors">Retry Now</button>
+                    <p class="mt-4 text-xs text-gray-500">If the problem persists, the test run might have failed permanently.</p>
+                </div>
+            `;
         }
     };
 
@@ -83,28 +132,49 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             coachScores = await response.json();
             
-            // Update all URLs with the scores
-            Object.keys(processedDataByUrl).forEach(url => {
-                processedDataByUrl[url].summary.performanceScore = coachScores.performanceScore;
-                processedDataByUrl[url].summary.privacyScore = coachScores.privacyScore;
-                processedDataByUrl[url].summary.bestPracticeScore = coachScores.bestPracticeScore;
+            // Handle array response (multi-URL) or single object
+            const scoresArray = Array.isArray(coachScores) ? coachScores : [coachScores];
+            
+            console.log('Coach scores array:', scoresArray);
+            console.log('Processed data by URL keys:', Object.keys(processedDataByUrl));
+            
+            // Update all URLs with their respective scores
+            scoresArray.forEach(score => {
+                // Find matching entry in our processed data by group OR url
+                const entries = Object.entries(processedDataByUrl);
+                const match = entries.find(([key, e]) => {
+                    // Match by group name or normalized URL
+                    const groupMatch = (e.group && e.group === score.groupName);
+                    const urlMatch = normalize(e.summary.url) === normalize(score.url);
+                    return groupMatch || urlMatch;
+                });
+                
+                if (match) {
+                    const [key, entry] = match;
+                    console.log(`Mapping scores to ${key}`);
+                    entry.summary.performanceScore = score.performanceScore;
+                    entry.summary.privacyScore = score.privacyScore;
+                    entry.summary.bestPracticeScore = score.bestPracticeScore;
+                } else {
+                    console.warn(`No match found for score:`, score);
+                }
             });
             
-            console.log('Coach scores loaded:', coachScores);
+            // If we have a selected URL, refresh the summary tab display
+            if (selectedUrl) {
+                console.log(`Refreshing display for ${selectedUrl}`);
+                displayReportForUrl(selectedUrl);
+            }
+            
+            console.log('Coach scores mapped successfully');
         } catch (error) {
-            console.warn('Could not fetch coach scores:', error.message);
+            console.error('Failure in fetchCoachScores:', error);
         }
     };
 
     const processData = () => {
         // Group data by URL or 'group' tag
         const uniquePages = new Set();
-
-        // Helper to normalize URL (strip trailing slash)
-        const normalize = (str) => {
-            if (!str) return str;
-            return str.endsWith('/') ? str.slice(0, -1) : str;
-        };
 
         allData.forEach(d => {
             const rawId = d.url || d.group;
@@ -122,7 +192,8 @@ document.addEventListener('DOMContentLoaded', () => {
             if (recordsForUrl.length > 0) {
                 processedDataByUrl[urlKey] = {
                     summary: extractSummary(recordsForUrl, urlKey),
-                    media: extractMedia(recordsForUrl)
+                    media: extractMedia(recordsForUrl),
+                    group: recordsForUrl[0].group // Store the group name for reliable API filtering
                 };
             }
         });
@@ -140,6 +211,7 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     const displayReportForUrl = (url) => {
+        selectedUrl = url;
         const data = processedDataByUrl[url];
         reportSubtitle.textContent = `Showing results for: ${url}`;
         renderTabsAndContent(data);
@@ -187,7 +259,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 pane.classList.add('active');
                 if (tabName === 'Performance' && pane.dataset.loaded === 'false') {
                     try {
-                        const performanceMetrics = await fetch(`/api/tests/${testId}/performance`)
+                        const filterParam = data.group ? `group=${encodeURIComponent(data.group)}` : `url=${encodeURIComponent(selectedUrl)}`;
+                        const performanceMetrics = await fetch(`/api/tests/${testId}/performance?${filterParam}`)
                             .then(r => r.json());
                         
                         if (performanceMetrics && Object.keys(performanceMetrics).length > 0) {
@@ -208,7 +281,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
                 if (tabName === 'Coach' && pane.dataset.loaded === 'false') {
                     try {
-                        const coachData = await fetch(`/api/tests/${testId}/coach`).then(r => r.json());
+                        const filterParam = data.group ? `group=${encodeURIComponent(data.group)}` : `url=${encodeURIComponent(selectedUrl)}`;
+                        const coachData = await fetch(`/api/tests/${testId}/coach?${filterParam}`).then(r => r.json());
                         const transformCoachData = getTransformCoachData();
                         data.coach = transformCoachData(coachData);
                         
@@ -222,7 +296,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
                 if (tabName === 'PageXray' && pane.dataset.loaded === 'false') {
                     try {
-                            const response = await fetch(`/api/tests/${testId}/pagexray`);
+                            const filterParam = data.group ? `group=${encodeURIComponent(data.group)}` : `url=${encodeURIComponent(selectedUrl)}`;
+                            const response = await fetch(`/api/tests/${testId}/pagexray?${filterParam}`);
                             if (!response.ok) {
                                 throw new Error(`Failed to fetch pagexray data: ${response.status}`);
                             }
@@ -426,22 +501,39 @@ function createCoachTab(data) {
                 ${categories.map(category => {
                     const categoryData = data.coach[category];
                     if (!categoryData) return '';
-                    
+
                     const categoryTitle = category.charAt(0).toUpperCase() + category.slice(1);
                     const adviceItems = Object.entries(categoryData.adviceList || {});
                     const fullMarkItems = categoryData.fullMark?.list || [];
-                    
+
                     return `
                         <div class="mb-6">
                             <h3 class="text-lg font-bold text-gray-800 mb-2">${categoryTitle} <span class="text-sm font-normal text-gray-600">(Score: ${categoryData.score})</span></h3>
                             ${adviceItems.length > 0 ? `
                                 <div class="pl-4">
-                                    ${adviceItems.map(([adviceId, advice]) => `
+                                    ${adviceItems.map(([adviceId, advice]) => {
+
+                                        const description = coachAdviceDescriptions?.[adviceId] || '';
+
+                                        return `
                                         <div class="border-b py-3">
-                                            <h4 class="font-semibold text-md">${escapeHtml(advice.title || adviceId)} <span class="text-xs font-normal text-gray-600">(${advice.score})</span></h4>
-                                            <p class="text-gray-700 mt-1">${escapeHtml(advice.advice || '')}</p>
+                                            <h4 class="font-semibold text-md flex items-center">
+                                                ${escapeHtml(advice.title || adviceId)}
+                                                <span class="text-xs font-normal text-gray-600 ml-1">(${advice.score})</span>
+
+                                                <span class="tooltip-container">
+                                                    <button class="info-icon-btn">
+                                                        ⓘ
+                                                    </button>
+
+                                                    <span class="tooltip-text">
+                                                        ${escapeHtml(description)}
+                                                    </span>
+                                                </span>
+                                            </h4>
                                         </div>
-                                    `).join('')}
+                                        `;
+                                        }).join('')}
                                 </div>
                             ` : ''}
                         </div>

@@ -38,14 +38,16 @@ async function savePageXrayData(testRunId, url, groupName, browser, contentType,
  * Retrieve PageXray data from MySQL by test ID
  * Transforms MySQL format to match InfluxDB response format
  * @param {string} testId - Test ID to query
+ * @param {object} [filters] - Optional filters for the query
+ * @param {string} [filters.url] - Filter by URL
+ * @param {string} [filters.group] - Filter by group name
  * @returns {Array} Array of pagexray records in InfluxDB format
  */
-async function getPageXrayDataByTestId(testId) {
+async function getPageXrayDataByTestId(testId, filters) {
     try {
         const connection = await pool.getConnection();
         
-        const [rows] = await connection.execute(
-            `SELECT 
+        let query = `SELECT 
                 test_id,
                 url,
                 group_name,
@@ -56,10 +58,24 @@ async function getPageXrayDataByTestId(testId) {
                 transfer_size,
                 created_at
             FROM pagexray_data
-            WHERE test_id = ?
-            ORDER BY content_type`,
-            [testId]
-        );
+            WHERE test_id = ?`;
+        
+        const queryParams = [testId];
+        
+        if (filters) {
+            if (filters.url) {
+                // Check both raw URL and URL with trailing slash for robustness
+                query += ` AND (url = ? OR url = CONCAT(?, '/'))`;
+                queryParams.push(filters.url, filters.url);
+            } else if (filters.group) {
+                query += ` AND group_name = ?`;
+                queryParams.push(filters.group);
+            }
+        }
+        
+        query += ` ORDER BY content_type`;
+        
+        const [rows] = await connection.execute(query, queryParams);
         
         connection.release();
         

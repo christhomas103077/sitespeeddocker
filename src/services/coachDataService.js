@@ -35,50 +35,69 @@ async function saveCoachData(testRunId, url, groupName, categoryName, adviceId, 
 }
 
 /**
- * Retrieve coach advice data from MySQL by test ID
- * Transforms MySQL format to match InfluxDB query response format
+ * Retrieve structured coach advice data from MySQL by test ID
+ * Returns metadata once with nested advice data to reduce payload size
  * @param {string} testId - Test ID to query
- * @returns {Array} Array of coach advice records
+ * @param {object} [filters] - Optional filters for the query
+ * @returns {Object} Structured object with test metadata and coaching data array
  */
-async function getCoachDataByTestId(testId) {
+async function getCoachDataStructuredByTestId(testId, filters) {
     try {
         const connection = await pool.getConnection();
         
-        const [rows] = await connection.execute(
-            `SELECT 
+        let query = `SELECT 
                 test_id, 
                 url, 
                 group_name, 
                 category_name, 
                 advice_id, 
                 score, 
-                title, 
-                description,
+                title,
                 created_at
             FROM coach_advice 
-            WHERE test_id = ?
-            ORDER BY created_at DESC`,
-            [testId]
-        );
+            WHERE test_id = ?`;
+        
+        const queryParams = [testId];
+
+        if (filters) {
+            if (filters.url) {
+                // Check both raw URL and URL with trailing slash for robustness
+                query += ` AND (url = ? OR url = CONCAT(?, '/'))`;
+                queryParams.push(filters.url, filters.url);
+            } else if (filters.group) {
+                query += ` AND group_name = ?`;
+                queryParams.push(filters.group);
+            }
+        }
+
+        query += ` ORDER BY created_at DESC`;
+        
+        const [rows] = await connection.execute(query, queryParams);
         
         connection.release();
         
-        // Transform MySQL format to match InfluxDB response format
-        const transformedData = rows.map(row => ({
-            test_id: row.test_id,
-            url: row.url,
-            group: row.group_name,
-            category_name: row.category_name,
-            adviceId: row.advice_id,
-            score: row.score,
-            title: row.title,
-            description: row.description,
-            _time: row.created_at
-        }));
+        if (rows.length === 0) {
+            return null;
+        }
         
-        return transformedData;
+        // Extract common fields from first row
+        const firstRow = rows[0];
+        const structuredData = {
+            test_id: firstRow.test_id,
+            url: firstRow.url,
+            group_name: firstRow.group_name,
+            created_at: firstRow.created_at,
+            coachdata: rows.map(row => ({
+                category_name: row.category_name,
+                advice_id: row.advice_id,
+                score: row.score,
+                title: row.title
+            }))
+        };
+        
+        return structuredData;
     } catch (err) {
-        console.error('Error retrieving coach data from MySQL:', err.message);
+        console.error('Error retrieving structured coach data from MySQL:', err.message);
         throw err;
     }
 }
@@ -179,22 +198,24 @@ async function getTestRunById(testId) {
 /**
  * Save coach category scores to MySQL (for immediate display on Summary tab)
  * @param {string} testRunId - Test ID
+ * @param {string} url - URL tested
+ * @param {string} groupName - Group/Folder name
  * @param {Object} scores - Object containing performance, privacy, and bestpractice scores
  */
-async function saveCoachScores(testRunId, scores) {
+async function saveCoachScores(testRunId, url, groupName, scores) {
     try {
         const connection = await pool.getConnection();
         
         await connection.execute(
             `INSERT INTO coach_scores 
-            (test_id, performance_score, privacy_score, bestpractice_score)
-            VALUES (?, ?, ?, ?)
+            (test_id, url, group_name, performance_score, privacy_score, bestpractice_score)
+            VALUES (?, ?, ?, ?, ?, ?)
             ON DUPLICATE KEY UPDATE
             performance_score = VALUES(performance_score),
             privacy_score = VALUES(privacy_score),
             bestpractice_score = VALUES(bestpractice_score),
             created_at = CURRENT_TIMESTAMP`,
-            [testRunId, scores.performance || null, scores.privacy || null, scores.bestpractice || null]
+            [testRunId, url, groupName, scores.performance || null, scores.privacy || null, scores.bestpractice || null]
         );
         
         connection.release();
@@ -207,37 +228,50 @@ async function saveCoachScores(testRunId, scores) {
 /**
  * Retrieve coach scores from MySQL by test ID
  * @param {string} testId - Test ID to query
- * @returns {Object} Object with performance, privacy, and bestpractice scores
+ * @param {object} [filters] - Optional filters for the query
+ * @returns {Array} Array of objects with performance, privacy, and bestpractice scores
  */
-async function getCoachScores(testId) {
+async function getCoachScores(testId, filters) {
     try {
         const connection = await pool.getConnection();
         
-        const [rows] = await connection.execute(
-            `SELECT 
+        let query = `SELECT 
+                url,
+                group_name,
                 performance_score, 
                 privacy_score, 
                 bestpractice_score
             FROM coach_scores 
-            WHERE test_id = ?`,
-            [testId]
-        );
+            WHERE test_id = ?`;
+            
+        const queryParams = [testId];
+
+        if (filters) {
+            if (filters.url) {
+                // Check both raw URL and URL with trailing slash for robustness
+                query += ` AND (url = ? OR url = CONCAT(?, '/'))`;
+                queryParams.push(filters.url, filters.url);
+            } else if (filters.group) {
+                query += ` AND group_name = ?`;
+                queryParams.push(filters.group);
+            }
+        }
+        
+        const [rows] = await connection.execute(query, queryParams);
         
         connection.release();
         
         if (rows.length > 0) {
-            return {
-                performanceScore: rows[0].performance_score || 'N/A',
-                privacyScore: rows[0].privacy_score || 'N/A',
-                bestPracticeScore: rows[0].bestpractice_score || 'N/A'
-            };
+            return rows.map(row => ({
+                url: row.url,
+                groupName: row.group_name,
+                performanceScore: row.performance_score || 'N/A',
+                privacyScore: row.privacy_score || 'N/A',
+                bestPracticeScore: row.bestpractice_score || 'N/A'
+            }));
         }
         
-        return {
-            performanceScore: 'N/A',
-            privacyScore: 'N/A',
-            bestPracticeScore: 'N/A'
-        };
+        return [];
     } catch (err) {
         console.error('Error retrieving coach scores from MySQL:', err.message);
         throw err;
@@ -246,7 +280,7 @@ async function getCoachScores(testId) {
 
 module.exports = {
     saveCoachData,
-    getCoachDataByTestId,
+    getCoachDataStructuredByTestId,
     saveTestRun,
     getAllTestRuns,
     getTestRunById,
